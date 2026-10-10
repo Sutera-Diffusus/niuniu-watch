@@ -13,7 +13,8 @@
 
 ## 使用（exe）
 
-1. 下载 Release 中的 `今天牛牛酱投喂了没.exe`，放到任意文件夹
+1. 下载 Release 中的 `niuniu-feed-v1.0.exe`
+   （GitHub 的 Release 资产名不支持中文，下载后可自行重命名为 `今天牛牛酱投喂了没.exe`，不影响使用）
 2. 同目录放一个 `config.json`（参考 `config.example.json`），填入你在站点申请的密钥：
 
    ```json
