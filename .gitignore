@@ -1,0 +1,17 @@
+# 数据/本地文件（不进仓库）
+log.jsonl
+state.json
+status.md
+report.md
+changes.log
+alerts.log
+config.json
+.last_shown
+_toast.ps1
+_try/
+_try-retry.yml
+__pycache__/
+_build/
+*.spec
+*.exe
+_icon.png
