@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """牛牛酱投喂面板 · 本地小服务。
 
-双击桌面「牛牛酱投喂」快捷方式 → 起服务并打开浏览器面板（已在运行则直接开面板）。
+双击启动器（Windows 快捷方式 / Kubuntu 桌面 .desktop）→ 起服务并打开浏览器面板（已在运行则直接开面板）。
+定时巡检：Windows 走计划任务；Kubuntu 走 systemd 用户定时器 niuniu-watch.timer（install.sh 安装）。
 端点：
   GET /              面板页面
   GET /api/quick     实时快检（配置模型，chat+responses 双线，30s 超时），缓存 5s
@@ -37,6 +38,10 @@ else:
     sys.path.insert(0, str(ROOT))
 import watch  # noqa: E402
 
+IS_WIN = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
+CF = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW：Windows 子进程不弹窗口；其它平台取 0
+
 
 def asset(name):
     """优先取 exe 旁的同名文件（可热改），否则用打包内嵌资源。"""
@@ -44,10 +49,19 @@ def asset(name):
     return local if local.exists() else ASSETS / name
 
 
+def open_path(p):
+    """用系统默认程序打开文件（Windows / macOS / Linux）。"""
+    p = str(p)
+    if IS_WIN:
+        os.startfile(p)  # Windows 专用
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", p])
+
+
 def run_watch():
     if FROZEN:
         subprocess.run([sys.executable, "--watch"], cwd=str(ROOT), timeout=600,
-                       creationflags=0x08000000)
+                       creationflags=CF)
     else:
         subprocess.run([sys.executable, str(ROOT / "watch.py")], cwd=str(ROOT), timeout=600)
 
@@ -354,7 +368,7 @@ def try_model(model):
     t0 = time.time()
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=180, creationflags=0x08000000)
+                           errors="replace", timeout=180, creationflags=CF)
         out = (p.stdout or "").strip()
         return {
             "ok": p.returncode == 0 and bool(out),
@@ -380,6 +394,15 @@ def save_watcher_cfg(cfg):
 
 
 def task_status():
+    """定时巡检状态：Kubuntu 读 systemd 用户定时器；Windows 读计划任务。"""
+    if IS_LINUX:
+        return _linux_task_status()
+    if not IS_WIN:
+        return {"error": "不支持的平台: " + sys.platform}
+    return _win_task_status()
+
+
+def _win_task_status():
     ps = (
         "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
         "$t=Get-ScheduledTask -TaskName 'niuniu-watch' -ErrorAction Stop;"
@@ -390,7 +413,9 @@ def task_status():
     try:
         p = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=30,
-                           creationflags=0x08000000)
+                           creationflags=CF)
+        if p.returncode != 0:
+            return {"error": ((p.stderr or p.stdout or "").strip()[:160] or "读取计划任务失败")}
         return json.loads(p.stdout.strip() or "{}")
     except Exception as e:  # noqa: BLE001
         return {"error": f"{type(e).__name__}: {e}"}
@@ -400,7 +425,7 @@ def _ps(cmd, timeout=60):
     return subprocess.run(["powershell", "-NoProfile", "-Command",
                            "[Console]::OutputEncoding=[Text.Encoding]::UTF8;" + cmd],
                           capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout, creationflags=0x08000000)
+                          timeout=timeout, creationflags=CF)
 
 
 def _pyw():
@@ -409,7 +434,137 @@ def _pyw():
     return str(cand if cand.exists() else exe)
 
 
+# ---------- Kubuntu：systemd 用户定时器 ----------
+
+UNIT_SERVICE = "niuniu-watch.service"
+UNIT_TIMER = "niuniu-watch.timer"
+UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
+CAL = {15: "*:0/15", 30: "*:0/30", 60: "hourly", 120: "*-*-* 00/2:00:00",
+       180: "*-*-* 00/3:00:00", 360: "*-*-* 00/6:00:00", 720: "*-*-* 00/12:00"}
+
+
+def _systemctl(*params, timeout=60):
+    """systemctl --user；systemctl 缺失/超时也返回 CompletedProcess，不抛异常。"""
+    args = ["systemctl", "--user", "--no-pager", *params]
+    try:
+        return subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=timeout,
+                              env={**os.environ, "LC_ALL": "C"})  # LC_ALL=C：时间戳格式稳定可解析
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(args, 127, "", "systemctl 不存在")
+    except Exception as e:  # noqa: BLE001
+        return subprocess.CompletedProcess(args, 1, "", f"{type(e).__name__}: {e}")
+
+
+def _sd_quote(s):
+    """systemd 单元文件参数转义（'%' 需写成 '%%'；含空格路径加引号）。"""
+    return '"' + str(s).replace("%", "%%").replace('"', '\\"') + '"'
+
+
+def _write_units(minutes):
+    """写入 niuniu-watch.{service,timer}：整点对齐、错过的巡检开机后补跑。"""
+    UNIT_DIR.mkdir(parents=True, exist_ok=True)
+    (UNIT_DIR / UNIT_SERVICE).write_text(
+        "[Unit]\n"
+        "Description=niuniu-watch sweep (watch + publish)\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"WorkingDirectory={_sd_quote(ROOT)}\n"
+        f"ExecStart={_sd_quote(sys.executable)} {_sd_quote(ROOT / 'serve.py')} --hourly\n",
+        encoding="utf-8")
+    (UNIT_DIR / UNIT_TIMER).write_text(
+        "[Unit]\n"
+        "Description=niuniu-watch schedule\n"
+        "\n"
+        "[Timer]\n"
+        f"OnCalendar={CAL[minutes]}\n"
+        "Persistent=true\n"
+        f"Unit={UNIT_SERVICE}\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n",
+        encoding="utf-8")
+
+
+def _sd_ts(v):
+    """'Wed 2026-10-14 15:00:00 CST' → '2026/10/14 15:00:00'（无值 → ''）。"""
+    p = (v or "").split()
+    return f"{p[1]} {p[2]}".replace("-", "/") if len(p) >= 3 else ""
+
+
+def _linux_task_status():
+    if not (UNIT_DIR / UNIT_TIMER).exists():
+        return {"State": "Disabled", "Next": "", "Last": "", "Result": None}
+    props = {}
+    for unit in (UNIT_TIMER, UNIT_SERVICE):
+        out = _systemctl("show", unit, "-p", "ActiveState",
+                         "-p", "LastTriggerUSec", "-p", "NextElapseUSecRealtime",
+                         "-p", "ExecMainStatus").stdout or ""
+        for ln in out.splitlines():
+            if "=" in ln:
+                k, v = ln.split("=", 1)
+                props[f"{unit}.{k}"] = v
+    state = "Disabled"
+    if props.get(f"{UNIT_TIMER}.ActiveState") == "active":
+        state = "Ready"
+    if props.get(f"{UNIT_SERVICE}.ActiveState") in ("activating", "active"):
+        state = "Running"
+    res = (props.get(f"{UNIT_SERVICE}.ExecMainStatus") or "").strip()
+    return {"State": state,
+            "Next": _sd_ts(props.get(f"{UNIT_TIMER}.NextElapseUSecRealtime")),
+            "Last": _sd_ts(props.get(f"{UNIT_TIMER}.LastTriggerUSec")),
+            "Result": int(res) if res.lstrip("-").isdigit() else None}
+
+
+def _linux_task_set(action, arg=""):
+    if action == "run":
+        r = _systemctl("start", UNIT_SERVICE)
+    elif action == "disable":
+        r = _systemctl("disable", "--now", UNIT_TIMER)
+    elif action == "enable":
+        if not (UNIT_DIR / UNIT_TIMER).exists():  # 首次：没装过就按配置间隔装好再启用
+            try:
+                iv = int(watcher_cfg().get("interval") or 60)
+                _write_units(iv if iv in CAL else 60)
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        _systemctl("daemon-reload")
+        r = _systemctl("enable", "--now", UNIT_TIMER)
+    elif action == "interval":
+        try:
+            minutes = int(arg or 60)
+        except ValueError:
+            return {"ok": False, "error": "bad interval"}
+        if minutes not in CAL:
+            return {"ok": False, "error": "支持 15/30/60/120/180/360/720 分钟"}
+        try:
+            _write_units(minutes)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        _systemctl("daemon-reload")
+        _systemctl("enable", UNIT_TIMER)
+        r = _systemctl("restart", UNIT_TIMER)  # 让新 OnCalendar 立即生效
+        if r.returncode == 0:
+            cfg = watcher_cfg()
+            cfg["interval"] = minutes
+            save_watcher_cfg(cfg)
+    else:
+        return {"ok": False, "error": "unknown action"}
+    return {"ok": r.returncode == 0, "code": r.returncode,
+            "out": (r.stdout or "").strip()[-160:], "err": (r.stderr or "").strip()[-160:]}
+
+
 def task_set(action, arg=""):
+    """管理定时巡检：Kubuntu 走 systemd 用户定时器；Windows 走计划任务。"""
+    if IS_LINUX:
+        return _linux_task_set(action, arg)
+    if not IS_WIN:
+        return {"ok": False, "error": "不支持的平台: " + sys.platform}
+    return _win_task_set(action, arg)
+
+
+def _win_task_set(action, arg=""):
     cfg = watcher_cfg()
     if action == "disable":
         r = _ps("Disable-ScheduledTask -TaskName 'niuniu-watch' | Out-Null; 'ok'")
@@ -559,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
                 target = {"status": ROOT / "status.md", "log": ROOT / "log.jsonl",
                           "changes": ROOT / "changes.log"}.get(f)
                 if target and target.exists():
-                    os.startfile(target)
+                    open_path(target)
                 return self._json({"ok": True})
             if u.path == "/api/quit":
                 self._json({"ok": True})
@@ -597,7 +752,7 @@ def main():
             return publish.main()
         except Exception:  # noqa: BLE001
             return 1
-    if "--hourly" in sys.argv:  # 计划任务：巡检 + 发布快照
+    if "--hourly" in sys.argv:  # 定时任务（Windows 计划任务 / systemd）：巡检 + 发布快照
         try:
             watch.main()
         except Exception:  # noqa: BLE001
@@ -608,7 +763,7 @@ def main():
         except Exception:  # noqa: BLE001
             pass
         return 0
-    if "--watch" in sys.argv:  # 单次巡检模式（计划任务调用）
+    if "--watch" in sys.argv:  # 单次巡检模式（Windows 计划任务 / 面板「立即巡检」）
         try:
             return watch.main()
         except Exception:  # noqa: BLE001

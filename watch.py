@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""牛牛酱公益站模型可用性监控（每小时由计划任务 niuniu-watch 调用）。
+"""牛牛酱公益站模型可用性监控（每小时由定时任务调用：Windows 计划任务 / systemd 用户定时器）。
 
 - 探测 free.quanthatch.com 上的全部模型：chat/completions 全量，通过者再验 responses 线。
 - 写 log.jsonl（每次运行追加）、state.json（供 omp hook 读取）、status.md（人读）、
-  changes.log（变化流水）；状态有变化时弹一条 Windows 通知。
-- 只用标准库，异常绝不外抛（计划任务里静默运行）。
+  changes.log（变化流水）；状态有变化时弹一条桌面通知（Windows 气泡 / Linux notify-send）。
+- 只用标准库，异常绝不外抛（定时任务里静默运行）。
 """
 import json
 import os
 import re
+import shutil
 import ssl
 import subprocess
 import sys
@@ -45,7 +46,7 @@ STATUS = ROOT / "status.md"
 REPORT = ROOT / "report.md"
 CHANGES = ROOT / "changes.log"
 MODELS_YML = Path.home() / ".omp" / "agent" / "models.yml"
-NOTIFY = True  # 状态有变化时弹 Windows 通知
+NOTIFY = True  # 状态有变化时弹桌面通知
 
 UA = "niuniu-watch/1.0"
 CTX = ssl.create_default_context()
@@ -139,24 +140,34 @@ def load_json(p):
 
 
 def toast(title, text):
+    """桌面通知：Windows 托盘气泡；Linux 用 notify-send（KDE），退回 kdialog。"""
     if not NOTIFY:
         return
-    ps = (
-        "$ErrorActionPreference='Stop';"
-        "Add-Type -AssemblyName System.Windows.Forms;"
-        "Add-Type -AssemblyName System.Drawing;"
-        "$n=New-Object System.Windows.Forms.NotifyIcon;"
-        "$n.Icon=[System.Drawing.SystemIcons]::Information;$n.Visible=$true;"
-        f"$n.ShowBalloonTip(15000,'{title}','{text}',[System.Windows.Forms.ToolTipIcon]::Info);"
-        "Start-Sleep -Seconds 16;$n.Dispose()"
-    )
     try:
-        tmp = ROOT / "_toast.ps1"
-        tmp.write_text("\ufeff" + ps, encoding="utf-8")
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(tmp)],
-            creationflags=0x08000000,
-        )
+        if sys.platform == "win32":
+            ps = (
+                "$ErrorActionPreference='Stop';"
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "Add-Type -AssemblyName System.Drawing;"
+                "$n=New-Object System.Windows.Forms.NotifyIcon;"
+                "$n.Icon=[System.Drawing.SystemIcons]::Information;$n.Visible=$true;"
+                f"$n.ShowBalloonTip(15000,'{title}','{text}',[System.Windows.Forms.ToolTipIcon]::Info);"
+                "Start-Sleep -Seconds 16;$n.Dispose()"
+            )
+            tmp = ROOT / "_toast.ps1"
+            tmp.write_text("\ufeff" + ps, encoding="utf-8")
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(tmp)],
+                creationflags=0x08000000,
+            )
+            return
+        ns = shutil.which("notify-send")
+        if ns:
+            subprocess.Popen([ns, "-a", "niuniu-watch", "-t", "15000", title, text])
+            return
+        kd = shutil.which("kdialog")
+        if kd:
+            subprocess.Popen([kd, "--title", title, "--passivepopup", text, "15"])
     except Exception:  # noqa: BLE001
         pass
 

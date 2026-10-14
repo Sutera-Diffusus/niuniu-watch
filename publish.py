@@ -3,7 +3,7 @@
 """生成静态快照页（docs/index.html + docs/data.json）并推送到 GitHub Pages。
 
 别人打开 https://<user>.github.io/niuniu-watch/ 即可查看；
-页面每分钟自动拉取 data.json 刷新，本脚本由每小时计划任务调用。
+页面每分钟自动拉取 data.json 刷新，本脚本由每小时定时任务调用（Windows 计划任务 / systemd 用户定时器）。
 """
 import json
 import subprocess
