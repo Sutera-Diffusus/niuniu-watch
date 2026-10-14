@@ -8,6 +8,7 @@
 - 只用标准库，异常绝不外抛（计划任务里静默运行）。
 """
 import json
+import os
 import re
 import ssl
 import subprocess
@@ -26,7 +27,10 @@ if getattr(sys, "frozen", False):  # 打包后：数据写到 exe 同目录，�
 
 
 def _load_key():
-    """密钥从 config.json 读取（不进代码仓库）；换 key 只改 config.json。"""
+    """密钥优先级：环境变量 NIUNIU_API_KEY → config.json（不进代码仓库）。"""
+    k = os.environ.get("NIUNIU_API_KEY", "").strip()
+    if k:
+        return k
     try:
         c = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
         return (c.get("api_key") or "").strip()

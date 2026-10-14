@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>牛牛酱投喂</title>
+<title>今天牛牛酱投喂了没</title>
 <link id="fav" rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.82em' font-size='78'>🐮</text></svg>"/>
 <script>try{var t=localStorage.getItem("nn-theme")||"auto";if(t!=="auto")document.documentElement.dataset.theme=t;}catch(e){}</script>
 <style>
@@ -86,6 +86,8 @@ body::after{ /* 极细网格底纹 */
 .ticker:hover{color:var(--muted)}
 .ticker b{color:var(--muted);font-weight:600}
 .hright{display:flex;align-items:center;gap:14px;flex:none}
+.gh{display:flex;align-items:center;justify-content:center;color:var(--dim);transition:.15s;text-decoration:none}
+.gh:hover{color:var(--fg);transform:translateY(-1px)}
 .tgl{cursor:pointer;user-select:none;font-size:11.5px;color:var(--dim);font-family:var(--mono);transition:.15s;white-space:nowrap}
 .tgl:hover{color:var(--muted)}
 .tgl::before{content:"○ ";color:var(--dim)}
@@ -266,6 +268,13 @@ body::after{ /* 极细网格底纹 */
 .statusline .lnk{font-size:11.5px}
 .statusline .note{margin-left:auto;white-space:nowrap}
 
+/* ---------- 静态快照模式 ---------- */
+html[data-snap] .no-snap{display:none !important}
+.snapchip{display:none;font-family:var(--mono);font-size:10px;color:var(--warn);
+  border:1px solid rgba(236,193,93,.45);border-radius:3px;padding:1px 7px;margin-left:10px;vertical-align:2px;letter-spacing:.5px}
+html[data-snap] .snapchip{display:inline-block}
+html[data-snap] .ticker{cursor:default}
+
 /* ---------- toast / skeleton / drawer ---------- */
 @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
 .sk{border-radius:4px;background:linear-gradient(90deg,var(--skel1),var(--skel2),var(--skel1));
@@ -319,14 +328,18 @@ body::after{ /* 极细网格底纹 */
   <header class="mast">
     <div class="brand">
       <span class="logo">🐮</span>
-      <h1>牛牛酱投喂</h1>
+      <h1>今天牛牛酱投喂了没</h1>
+      <span class="snapchip" title="此页面为静态快照，由作者本地程序每小时发布">静态快照</span>
       <span class="sub">free.quanthatch.com<span id="live-dot" class="live-dot busy"></span></span>
     </div>
     <span class="ticker" id="ticker" title="点击打开完整变化记录">最近变化 · —</span>
     <div class="hright">
       <span class="tgl" id="themePill" title="主题：自动 / 浅色 / 深色">主题=<b id="themen">自动</b></span>
       <span class="tgl" id="bellPill" title="状态翻转通知（含提示音）">通知=<b id="belln">0</b></span>
-      <span class="tgl on" id="autoPill" title="自动刷新开关">自动=<b id="cd">60s</b></span>
+      <span class="tgl on no-snap" id="autoPill" title="自动刷新开关">自动=<b id="cd">60s</b></span>
+      <a class="gh" href="https://github.com/Sutera-Diffusus/niuniu-watch" target="_blank" rel="noopener" title="GitHub 仓库 · 在 Releases 里下载 exe">
+        <svg viewBox="0 0 16 16" width="19" height="19" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
     </div>
   </header>
 
@@ -365,7 +378,7 @@ body::after{ /* 极细网格底纹 */
   <section class="sect watch">
     <div class="sec-h">
       <span class="sec-idx">02</span><h2>观察列表</h2>
-      <span class="sec-actions">
+      <span class="sec-actions no-snap">
         <span class="lnk primary" id="btn-quick"><kbd>R</kbd>立即复查</span>
         <span class="lnk" id="btn-sweep"><kbd>S</kbd>全站巡检</span>
       </span>
@@ -394,14 +407,14 @@ body::after{ /* 极细网格底纹 */
       <div class="matrix" id="grid24"></div>
       <div class="legend"><span><i class="lg-ok"></i>可用</span><span><i class="lg-warn"></i>仅chat</span><span><i class="lg-bad"></i>挂</span></div>
       <div class="log">
-        <div class="sec-h"><span class="sec-idx">05</span><h2>变化记录</h2><span class="lnk" id="alerts-more" style="margin-left:auto">完整历史 →</span></div>
+        <div class="sec-h"><span class="sec-idx">05</span><h2>变化记录</h2><span class="lnk no-snap" id="alerts-more" style="margin-left:auto">完整历史 →</span></div>
         <div id="alerts"><div class="empty">暂无变化</div></div>
       </div>
     </div>
   </section>
 
   <!-- 06 控制台（终端提示符风格） -->
-  <section class="ctrlbar">
+  <section class="ctrlbar no-snap">
     <span class="prompt">$</span>
     <span class="sec-idx">06</span>
     <span class="meta" id="ctrl-meta">读取中…</span>
@@ -414,8 +427,8 @@ body::after{ /* 极细网格底纹 */
   </section>
 
   <footer class="statusline">
-    <span class="lnk" id="btn-status">打开 status.md</span>
-    <span class="lnk" id="btn-quit">退出服务</span>
+    <span class="lnk no-snap" id="btn-status">打开 status.md</span>
+    <span class="lnk no-snap" id="btn-quit">退出服务</span>
     <span class="note">每整点自动巡检 · 仅本机可见</span>
   </footer>
 </div>
@@ -431,6 +444,8 @@ body::after{ /* 极细网格底纹 */
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const CACHE_KEY = "nn-cache";
+const SNAP = window.__SNAPSHOT__ || null;      // 静态快照（GitHub Pages 版注入）
+const SNAPMODE = !!SNAP;
 let busy = false, tickerTimer = null, lastData = null;
 
 const cfg = {
@@ -597,7 +612,8 @@ function paintBell(){ $("#bellPill").classList.toggle("on", cfg.notify); }
 function render(d, opts = {}){
   lastData = d;
   $("#fail").style.display = "none";
-  $("#stamp").textContent = (opts.cached ? "缓存 · 刷新中…" : "更新于 " + d.ts);
+  $("#stamp").textContent = SNAPMODE ? ("快照 · " + d.ts)
+    : (opts.cached ? "缓存 · 刷新中…" : "更新于 " + d.ts);
   const upN = d.counts.up, tot = d.counts.total, noUp = upN === 0;
   document.title = noUp ? "🐮 没投喂" : `🐮 有投喂 ${upN}/${tot}`;
   setFavicon(!noUp);
@@ -739,7 +755,7 @@ function render(d, opts = {}){
 
 /* ---------- data ---------- */
 async function quick(deep){
-  if (busy) return;
+  if (busy || SNAPMODE) return;
   setBusy(true, "检查中");
   try{
     const r = await fetch("/api/quick" + (deep ? "?deep=1" : ""), {cache: "no-store"});
@@ -750,7 +766,7 @@ async function quick(deep){
   finally{ setBusy(false); cd = cfg.sec; paintAuto(); }
 }
 async function sweep(){
-  if (busy) return;
+  if (busy || SNAPMODE) return;
   setBusy(true, "全站巡检中");
   try{
     const r = await fetch("/api/sweep", {cache: "no-store"});
@@ -797,7 +813,7 @@ $("#autoPill").addEventListener("click", () => {
   cd = cfg.sec; paintAuto();
   showToast(cfg.auto ? `自动刷新已开启（每 ${cfg.sec}s）` : "自动刷新已关闭");
 });
-$("#ticker").addEventListener("click", () => fetch("/api/open?f=changes"));
+$("#ticker").addEventListener("click", () => { if (!SNAPMODE) fetch("/api/open?f=changes"); });
 $("#alerts-more").addEventListener("click", () => fetch("/api/open?f=changes"));
 
 /* ---------- drawer ---------- */
@@ -819,6 +835,7 @@ function spark(hs){
   </svg>`;
 }
 function openDrawer(id){
+  if (SNAPMODE){ renderSnapshotDrawer(id); return; }
   drawerId = id;
   $("#d-title").textContent = "niuniu/" + id;
   $("#drawer").classList.add("open");
@@ -828,6 +845,43 @@ function openDrawer(id){
     .then(r => r.json())
     .then(d => { if (drawerId === id) renderDrawer(d); })
     .catch(e => { if (drawerId === id) $("#d-body").innerHTML = `<div class="t-bad" style="font-size:12px">${esc(e.message)}</div>`; });
+}
+function renderSnapshotDrawer(id){
+  drawerId = id;
+  $("#d-title").textContent = "niuniu/" + id;
+  $("#drawer").classList.add("open");
+  $("#backdrop").classList.add("open");
+  const d = lastData || {};
+  const m = (d.models || []).find(x => x.id === id) || {};
+  const h = d.history || {}, st = (h.stats || {})[id] || {};
+  const arr = (h.models || {})[id] || [], slots = h.slots || [];
+  const bars = arr.length ? `<div style="display:flex;gap:3px">${arr.map((v, i) =>
+    `<i style="width:7px;height:16px;border-radius:2px;background:${v === 1 ? "var(--ok)" : v === 0 ? "rgba(179,69,77,.55)" : "var(--track)"}" title="${esc(slots[i] || "")}"></i>`).join("")}</div>`
+    : '<div style="color:var(--dim);font-size:11.5px">暂无历史</div>';
+  const stTxt = m.state === "up" ? '<span class="pill ok">双线可用</span>'
+    : m.state === "chat-only" ? '<span class="pill warn">仅 chat</span>'
+    : `<span class="pill bad">${esc(m.errKind || "不可用")}</span>`;
+  $("#d-body").innerHTML = `
+  <div class="dsec">
+    <h4>快照数据 · 更新于 ${esc(d.ts || "?")}</h4>
+    <div class="kv"><span>状态</span><span>${stTxt}</span></div>
+    <div class="kv"><span>chat 延迟</span><span>${m.ms ? m.ms + " ms" : "—"}</span></div>
+    <div class="kv"><span>24h 可用率</span><span>${st.runs ? Math.round(100 * (st.up || 0) / st.runs) + "%（" + (st.up || 0) + "/" + st.runs + " 次）" : "—"}</span></div>
+    <div class="kv"><span>平均延迟</span><span>${st.avg_ms ? fmtMs(st.avg_ms) : "—"}</span></div>
+    ${m.err ? `<div class="kv"><span>错误</span><span style="color:var(--dim);font-size:11px">${esc(m.err)}</span></div>` : ""}
+  </div>
+  <div class="dsec"><h4>24H 可用 · 每小时一格</h4>${bars}</div>
+  <div class="dsec" style="display:flex;gap:8px;align-items:center;justify-content:space-between;border-left-color:var(--ok)">
+    <span style="color:var(--dim);font-size:11.5px;font-family:var(--mono)">niuniu/${esc(id)}</span>
+    <button class="btn" id="d-copy" style="font-size:12px;padding:6px 13px">复制 selector</button>
+  </div>
+  <div style="color:var(--dim);font-size:11px">静态快照模式：实时探测与一键实测请用本地版。</div>`;
+  $("#d-close").onclick = closeDrawer;
+  $("#d-copy").addEventListener("click", async () => {
+    const sel = "niuniu/" + id;
+    try { await navigator.clipboard.writeText(sel); showToast("已复制 " + sel); }
+    catch { showToast(sel); }
+  });
 }
 function closeDrawer(){
   drawerId = null;
@@ -998,6 +1052,7 @@ addEventListener("keydown", e => {
 });
 
 /* ---------- boot ---------- */
+if (SNAPMODE) document.documentElement.dataset.snap = "1";
 try{
   const c = JSON.parse(localStorage.getItem(CACHE_KEY));
   if (c && Date.now() - c.t < 6 * 3600e3) render(c.d, { cached: true });
@@ -1006,7 +1061,17 @@ paintAuto();
 paintBell();
 renderAlerts();
 applyTheme();
-quick();
+if (SNAPMODE){
+  render(SNAP, { cached: true });  // 内嵌快照立即渲染
+  setInterval(async () => {        // 每分钟拉取最新快照
+    try{
+      const r = await fetch("data.json", { cache: "no-store" });
+      if (r.ok) render(await r.json());
+    }catch(e){}
+  }, 60000);
+} else {
+  quick();
+}
 </script>
 </body>
 </html>

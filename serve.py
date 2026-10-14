@@ -429,7 +429,7 @@ def task_set(action, arg=""):
         day_start = base.replace(hour=0, minute=0)
         at = day_start + ((base - day_start) // step + 1) * step
         if FROZEN:
-            exe, arg = str(Path(sys.executable).resolve()), "--watch"
+            exe, arg = str(Path(sys.executable).resolve()), "--hourly"
         else:
             exe, arg = _pyw(), f'"{ROOT / "watch.py"}"'
         script = (
@@ -450,7 +450,7 @@ def task_set(action, arg=""):
             "out": (r.stdout or "").strip()[-160:], "err": (r.stderr or "").strip()[-160:]}
 
 
-def payload(force=False, deep=False):
+def payload(force=False, deep=False, wait=None):
     if not watch.KEY:
         return {"error": "缺少 api_key：请在 config.json 里填入牛牛酱的密钥（参考 config.example.json）"}
     now = time.time()
@@ -462,7 +462,7 @@ def payload(force=False, deep=False):
             return _cache["data"]
         cfg = set(watch.configured_ids())
         ids = site_models() or sorted(cfg) or watch.FALLBACK_IDS
-        live = probe_all(ids, fast_sec=15.0 if deep else 6.0)
+        live = probe_all(ids, fast_sec=wait if wait else (15.0 if deep else 6.0))
         models = []
         up = []
         for m in ids:
@@ -591,6 +591,23 @@ def idle_watch(server):
 
 
 def main():
+    if "--publish" in sys.argv:  # 生成静态快照并推送 GitHub Pages
+        try:
+            import publish
+            return publish.main()
+        except Exception:  # noqa: BLE001
+            return 1
+    if "--hourly" in sys.argv:  # 计划任务：巡检 + 发布快照
+        try:
+            watch.main()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            import publish
+            publish.main()
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
     if "--watch" in sys.argv:  # 单次巡检模式（计划任务调用）
         try:
             return watch.main()
