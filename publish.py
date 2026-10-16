@@ -62,6 +62,7 @@ def build():
     if "error" in data:
         return data
     data = serve.apply_snapshot_sweep(data)
+    data = serve.enrich_flavor(data)
     html = serve.asset("dashboard.html").read_text(encoding="utf-8")
     html = inject_social_meta(html, data)
     snap = "<script>window.__SNAPSHOT__ = " + json.dumps(data, ensure_ascii=False) + ";</script>"

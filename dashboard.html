@@ -334,6 +334,16 @@ html[data-snap] .ticker{cursor:default}
 .mchip.main{border-color:rgba(55,217,143,.45);color:var(--okfg);background:rgba(55,217,143,.08)}
 .mchip .tag{font-size:10px;color:var(--ok);margin-left:6px;letter-spacing:1px}
 .hungry{color:var(--badfg)}
+
+.sloganbar{display:flex;align-items:baseline;gap:12px;padding:10px 2px 0;font-size:12.5px;color:var(--muted)}
+.sloganbar .sg{flex:1;min-width:0;font-family:var(--sans);line-height:1.45}
+.sloganbar .sg b{color:var(--fg);font-weight:600}
+.predict{font-family:var(--mono);font-size:11.5px;color:var(--dim);padding:6px 2px 0}
+.predict b{color:var(--muted);font-weight:600}
+.predict.thin{color:var(--warn)}
+.vsline{font-family:var(--mono);font-size:11.5px;color:var(--dim);padding:0 2px 10px}
+.vsline .up{color:var(--ok)} .vsline .down{color:var(--bad)}
+.streakchip.tease{display:inline-block;color:var(--dim);border-color:var(--line);opacity:.85}
 </style>
 </head>
 <body>
@@ -388,6 +398,11 @@ html[data-snap] .ticker{cursor:default}
       <div class="today-sub">上过线 <b id="st-ever" class="ok">–</b><br/>最近投喂 <b id="st-last">–</b></div>
     </div>
     <div class="hero-subline"><span id="stamp">连接中…</span></div>
+    <div class="sloganbar">
+      <span class="sg" id="slogan">牛牛酱正在酝酿今日台词…</span>
+      <span class="lnk" id="btn-slogan" title="换一句梗">换一句</span>
+    </div>
+    <div class="predict" id="predict">抢饭预测加载中…</div>
   </section>
 
   <!-- 01b 今日菜单 -->
@@ -400,6 +415,7 @@ html[data-snap] .ticker{cursor:default}
       <span class="sec-meta" id="menu-meta"></span>
     </div>
     <div class="menu" id="menu"></div>
+    <div class="vsline" id="vsline" hidden></div>
   </section>
 
   <!-- 02 观察列表 -->
@@ -645,6 +661,173 @@ function paintSound(){
 }
 
 
+
+/* ---------- 梗标语池（按状态挑；点击「换一句」同池轮换） ---------- */
+const SLOGANS = {
+  fed: [
+    "开饭了！牛牛酱今日投喂已就位，筷子拿好。",
+    "碗来！公益站热乎模型出锅，小心烫。",
+    "投喂通道亮绿灯，赛博牧场短暂丰收。",
+    "主厨牛牛酱说：今天这道还行，先吃为敬。",
+    "有投喂的日子，连延迟条都看起来更可爱。",
+    "菜单已上桌——不吃不是不给面子，是队列太长。",
+    "叮咚：牛牛酱外卖已送达 free.quanthatch.com。",
+    "今日份多巴胺已由上游仓库冷藏配送。",
+  ],
+  hungry: [
+    "牛牛酱摸了摸空空的食槽：……你们是不是把我忘了。",
+    "空腹警告：再不上菜，本牛要开始写小作文了。",
+    "投喂雷达静默中。建议原地转圈，等待开饭广播。",
+    "饿不是罪，但全站 down 有点过分了啊喂。",
+    "食槽回声：空空空空。请投喂师尽快归队。",
+    "没有模型的夜晚，只剩供餐带上的灰格子。",
+    "牛牛酱启动省电模式：少说话，多盼开饭。",
+    "据说盯着页面看不会加速投喂……但试试也无妨。",
+  ],
+  streak: [
+    "连胜还在燃烧！牛牛酱开始怀疑自己是不是开了挂。",
+    "连续开饭的日子，食槽已经有了自尊心。",
+    "🔥 连胜中：请保持投喂，不要惊动运气。",
+    "稳定投喂像自律打卡——今天也没断。",
+  ],
+  alldown: [
+    "全挂现场：连空气都是 502 味的。",
+    "上游集体请假，牛牛酱只能对着 status.md 干瞪眼。",
+    "今天的菜单是：无。配菜也是：无。谢谢惠顾。",
+    "若你也在等投喂，请在此与牛牛酱大眼瞪小眼。",
+  ],
+  peak: [
+    "正值历史开饭高峰！抢饭的朋友请排好队。",
+    "经验主义提示：这个点以前常有热乎的。",
+    "高峰窗口亮起——手快有，手慢看供餐带。",
+  ],
+  thin: [
+    "样本还不够厚，牛牛酱拒绝装成算命大师。",
+    "数据太瘦，预测先憋着；梗可以先吃。",
+  ],
+  idle: [
+    "今天牛牛酱投喂了没？面板就是为了回答这句。",
+    "公益站模型天气预报：以本页为准，以开饭为准。",
+    "监视投喂是门艺术，刷新是门科学。",
+  ],
+};
+let _sloganIdx = 0;
+let _sloganPool = SLOGANS.idle;
+
+function pickSloganPool(d){
+  const upN = (d.counts && d.counts.up) || 0;
+  const t = d.today || {};
+  const pred = d.predict || {};
+  const streak = t.streak || 0;
+  const hour = new Date().getHours();
+  if (upN === 0 && (d.counts && d.counts.total) > 0){
+    if ((t.hungry_hours || 0) >= 6 || !t.last_feed_at) return SLOGANS.alldown.concat(SLOGANS.hungry);
+    return SLOGANS.hungry;
+  }
+  if (pred.thin) return SLOGANS.thin.concat(SLOGANS.fed);
+  if (streak >= 2) return SLOGANS.streak.concat(SLOGANS.fed);
+  if ((pred.usual_hours || []).includes(hour)) return SLOGANS.peak.concat(SLOGANS.fed);
+  if (upN > 0) return SLOGANS.fed;
+  return SLOGANS.idle;
+}
+function showSlogan(d, rotate){
+  const el = $("#slogan");
+  if (!el) return;
+  const pool = pickSloganPool(d);
+  if (rotate || pool !== _sloganPool){
+    if (pool !== _sloganPool){ _sloganPool = pool; _sloganIdx = Math.floor(Math.random() * pool.length); }
+    else _sloganIdx = (_sloganIdx + 1) % pool.length;
+  }
+  _sloganPool = pool;
+  el.textContent = pool[_sloganIdx % pool.length];
+}
+function ensurePredict(d){
+  if (d.predict && d.predict.text) return d.predict;
+  // 离线快照缺字段时：用供餐带现场估（取最近有投喂的整点）
+  const h = d.history || {};
+  const slots = h.slots || [];
+  const models = h.models || {};
+  const chrono = [];
+  slots.forEach((sl, i) => {
+    const hour = parseInt(String(sl).split(":")[0], 10);
+    if (Number.isNaN(hour)) return;
+    const on = Object.values(models).some(arr => arr && arr[i] === 1);
+    if (on) chrono.push(hour);
+  });
+  const samples = chrono.length;
+  const thin = samples < 3;
+  const usual = [];
+  for (let i = chrono.length - 1; i >= 0; i--){
+    const hour = chrono[i];
+    if (!usual.includes(hour)) usual.push(hour);
+    if (usual.length >= 3) break;
+  }
+  const all = [...new Set(chrono)].sort((a, b) => a - b);
+  const cur = new Date().getHours();
+  let next_h = null;
+  if (all.length){
+    const up = all.filter(h => h > cur);
+    next_h = up.length ? up[0] : all[0];
+  }
+  let text;
+  if (thin) text = `样本偏少（近 24h 仅 ${samples} 个有投喂整点），暂不敢瞎猜开饭点` + (usual.length ? ` · 最近见到 ${String(usual[0]).padStart(2,"0")}:00` : "");
+  else if (!usual.length) text = "近 24h 供餐带全空，牛牛酱作息成谜";
+  else {
+    const usual_s = usual.map(h => String(h).padStart(2,"0") + ":00").join("、");
+    text = next_h != null && next_h > cur
+      ? `近常开饭点 ${usual_s} · 下次可能 ${String(next_h).padStart(2,"0")}:00`
+      : `近常开饭点 ${usual_s} · 今日这波已过，明天再盯 ${String(next_h).padStart(2,"0")}:00`;
+  }
+  return { usual_hours: usual, next_hour: next_h, samples, thin, text };
+}
+function renderPredict(d){
+  const el = $("#predict");
+  if (!el) return;
+  const p = ensurePredict(d);
+  d.predict = p;
+  el.textContent = "抢饭预测 · " + p.text;
+  el.classList.toggle("thin", !!p.thin);
+  el.title = p.thin ? "样本不足，仅供参考" : `基于近 24h 供餐带 · ${p.samples} 个有投喂整点`;
+}
+function renderVsYesterday(d){
+  const el = $("#vsline");
+  if (!el) return;
+  let vs = d.vs_yesterday;
+  if (!vs){
+    // 轻量前端近似：用 ever vs 历史昨天槽
+    const h = d.history || {};
+    const slots = h.slots || [];
+    const models = h.models || {};
+    const cur = new Date().getHours();
+    const yset = new Set(), tset = new Set(d.up || d.today && d.today.ever || []);
+    Object.entries(models).forEach(([mid, arr]) => {
+      slots.forEach((sl, i) => {
+        if (!arr || arr[i] !== 1) return;
+        const hour = parseInt(String(sl).split(":")[0], 10);
+        if (hour > cur) yset.add(mid); else tset.add(mid);
+      });
+    });
+    const added = [...tset].filter(x => !yset.has(x)).sort();
+    const removed = [...yset].filter(x => !tset.has(x)).sort();
+    let text;
+    if (!yset.size) text = "昨天窗口样本不足，暂只看见今天的菜单";
+    else if (!added.length && !removed.length) text = "和昨天菜单一模一样（真稳）";
+    else {
+      const parts = [];
+      if (added.length) parts.push("多了 " + added.join("、"));
+      if (removed.length) parts.push("少了 " + removed.join("、"));
+      text = "比昨天 " + parts.join(" · ");
+    }
+    vs = { added, removed, text, thin: !yset.size };
+    d.vs_yesterday = vs;
+  }
+  el.hidden = false;
+  const bits = [];
+  if (vs.added && vs.added.length) bits.push(`<span class="up">+${esc(vs.added.join("、"))}</span>`);
+  if (vs.removed && vs.removed.length) bits.push(`<span class="down">−${esc(vs.removed.join("、"))}</span>`);
+  el.innerHTML = `对比昨天 · ${esc(vs.text)}` + (bits.length ? " · " + bits.join(" ") : "");
+}
+
 function fmtHungry(hours){
   if (hours == null) return "";
   if (hours === 0) return "";  // 当前有投喂时调用方会传 0
@@ -664,12 +847,24 @@ function feedBroadcast(d){
   const upN = (d.counts && d.counts.up) || 0, tot = (d.counts && d.counts.total) || 0;
   const t = d.today || {};
   const streak = t.streak || 0;
+  const pred = ensurePredict(d);
+  const vs = d.vs_yesterday;
   if (upN > 0){
     const names = (d.up || []).join("、") || "—";
-    return `🐮 有投喂 ${upN}/${tot}：${names} · ${d.ts || ""}${streak ? ` · 🔥${streak}` : ""}`.trim();
+    let s = `🐮 开饭啦！有投喂 ${upN}/${tot}：${names} · ${d.ts || ""}`;
+    if (streak) s += ` · 连胜🔥${streak}`;
+    if (vs && vs.text && !vs.thin) s += ` · ${vs.text}`;
+    return s.trim();
   }
   const hungry = fmtHungry(t.hungry_hours);
-  return `🐮 没投喂${hungry ? ` · 已饿 ${hungry}` : ""} · ${d.ts || ""}${streak ? ` · 🔥${streak}` : ""}`.trim();
+  let s = "🐮 没投喂";
+  if (hungry) s += ` · 牛牛酱已饿 ${hungry}`;
+  else if (t.hungry_hours == null) s += " · 食槽空空";
+  if (pred && pred.text && !pred.thin) s += ` · ${pred.text}`;
+  else if (pred && pred.thin) s += " · 开饭点样本还不够";
+  s += ` · ${d.ts || ""}`;
+  if (streak) s += ` · 🔥${streak}（别断！）`;
+  return s.trim();
 }
 async function copyBroadcast(){
   if (!lastData){ showToast("还没有数据"); return; }
@@ -712,9 +907,15 @@ function render(d, opts = {}){
   setFavicon(!noUp);
   const sc = $("#streakchip");
   if (sc){
-    sc.classList.toggle("on", streak > 0);
-    sc.textContent = streak > 0 ? `🔥${streak}` : "";
-    sc.title = streak > 0 ? `连续 ${streak} 天有投喂` : "暂无连胜";
+    if (streak > 0){
+      sc.classList.add("on"); sc.classList.remove("tease");
+      sc.textContent = `🔥${streak}`;
+      sc.title = `连续 ${streak} 天有投喂`;
+    } else {
+      sc.classList.add("on", "tease");
+      sc.textContent = "🔥？";
+      sc.title = "还没起连胜——开饭一次就能点燃";
+    }
   }
 
   /* hero */
@@ -731,7 +932,7 @@ function render(d, opts = {}){
     let hungerLine;
     if (t.last_feed_at || t.hungry_hours != null){
       const label = hungryTxt || "不到 1 小时";
-      hungerLine = `<span class="hungry">牛牛酱已经饿了 ${esc(label)}</span>`;
+      hungerLine = `<span class="hungry">牛牛酱已经饿了 ${esc(label)}（食槽在抗议）</span>`;
     } else {
       hungerLine = "还没有投喂记录";
     }
@@ -741,13 +942,18 @@ function render(d, opts = {}){
     $("#h-sub").innerHTML = [hungerLine, when, `今日 ${t.feeds || 0}/${t.runs || 0} 次巡检有投喂`]
       .filter(Boolean).join(" · ");
   } else {
-    $("#h-sub").innerHTML = `可用 <b>${esc(d.up.join("、"))}</b>`
-      + (streak ? ` · 连胜 <b>🔥${streak}</b>` : "");
+    $("#h-sub").innerHTML = `开饭中 · 可用 <b>${esc(d.up.join("、"))}</b>`
+      + (streak ? ` · 连胜 <b>🔥${streak}</b>` : "")
+      + ((d.vs_yesterday && d.vs_yesterday.text && !d.vs_yesterday.thin)
+          ? ` · <span title="对比昨天">${esc(d.vs_yesterday.text)}</span>` : "");
   }
   $("#h-rate").textContent = rate === null ? "—" : rate + "%";
 
-  /* 今日菜单 */
+  /* 今日菜单 + 预测 + 对比昨天 + 梗 */
   renderMenu(d);
+  renderPredict(d);
+  renderVsYesterday(d);
+  showSlogan(d, false);
 
   /* rows */
   const rows = $("#rows");
@@ -926,6 +1132,11 @@ $("#soundPill").addEventListener("click", () => {
 const copyBtns = () => { copyBroadcast(); };
 $("#btn-copy") && $("#btn-copy").addEventListener("click", copyBtns);
 $("#btn-copy-foot") && $("#btn-copy-foot").addEventListener("click", copyBtns);
+$("#btn-slogan") && $("#btn-slogan").addEventListener("click", () => {
+  if (!lastData){ showToast("还没有数据"); return; }
+  showSlogan(lastData, true);
+  showToast("已换一句");
+});
 $("#menu") && $("#menu").addEventListener("click", e => {
   const chip = e.target.closest(".mchip[data-id]");
   if (chip) openDrawer(chip.dataset.id);

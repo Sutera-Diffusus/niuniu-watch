@@ -234,6 +234,194 @@ def today_digest():
     }
 
 
+
+def _hour_feed_counts_from_history(history):
+    """从 history_24h 结构统计「整点有投喂」的小时分布。→ {0..23: count}"""
+    counts = {h: 0 for h in range(24)}
+    if not history:
+        return counts
+    slots = history.get("slots") or []
+    models = history.get("models") or {}
+    for i, sl in enumerate(slots):
+        try:
+            hour = int(str(sl).split(":")[0])
+        except Exception:  # noqa: BLE001
+            continue
+        on = any((arr or [None] * 24)[i] == 1 for arr in models.values())
+        if on:
+            counts[hour] = counts.get(hour, 0) + 1
+    return counts
+
+
+def predict_feed(history, now=None):
+    """抢饭预测：按 24h 供餐带估常开饭点。
+
+    单日窗里每个整点最多出现 1 次，故优先取「最近有投喂的整点」作 usual，
+    并用全部有投喂整点推算下次可能点；thin=True 表示样本太少。
+    """
+    now = now or datetime.now().astimezone()
+    slots = (history or {}).get("slots") or []
+    models = (history or {}).get("models") or {}
+    # 时间序：从旧到新收集有投喂的小时
+    chrono = []
+    for i, sl in enumerate(slots):
+        try:
+            hour = int(str(sl).split(":")[0])
+        except Exception:  # noqa: BLE001
+            continue
+        on = any((arr or [None] * 24)[i] == 1 for arr in models.values())
+        if on:
+            chrono.append(hour)
+    samples = len(chrono)
+    thin = samples < 3
+    # 最近出现的不重复整点（新→旧）
+    usual = []
+    for h in reversed(chrono):
+        if h not in usual:
+            usual.append(h)
+        if len(usual) >= 3:
+            break
+    all_hours = sorted(set(chrono))
+    cur = now.hour
+    next_h = None
+    if all_hours:
+        upcoming = [h for h in all_hours if h > cur]
+        next_h = upcoming[0] if upcoming else all_hours[0]
+    if thin:
+        text = f"样本偏少（近 24h 仅 {samples} 个有投喂整点），暂不敢瞎猜开饭点"
+        if usual:
+            text += f" · 最近见到 {usual[0]:02d}:00"
+    elif not usual:
+        text = "近 24h 供餐带全空，牛牛酱作息成谜"
+    else:
+        usual_s = "、".join(f"{h:02d}:00" for h in usual)
+        if next_h is not None and next_h > cur:
+            text = f"近常开饭点 {usual_s} · 下次可能 {next_h:02d}:00"
+        elif next_h is not None:
+            text = f"近常开饭点 {usual_s} · 今日这波已过，明天再盯 {next_h:02d}:00"
+        else:
+            text = f"近常开饭点 {usual_s}"
+    return {
+        "usual_hours": usual,
+        "next_hour": next_h,
+        "samples": samples,
+        "thin": thin,
+        "text": text,
+    }
+
+
+def vs_yesterday_from_history(history, today_up, now=None):
+    """用 24h 历史槽粗分「昨天/今天」菜单差（无完整 log 时的降级）。"""
+    now = now or datetime.now().astimezone()
+    today_set = set(today_up or [])
+    yset, tset = set(), set()
+    if not history:
+        return {"added": [], "removed": [], "yesterday": [], "text": "还没有足够历史对比昨天", "thin": True}
+    slots = history.get("slots") or []
+    models = history.get("models") or {}
+    cur_h = now.hour
+    for mid, arr in models.items():
+        for i, sl in enumerate(slots):
+            try:
+                hour = int(str(sl).split(":")[0])
+            except Exception:  # noqa: BLE001
+                continue
+            if (arr or [None] * 24)[i] != 1:
+                continue
+            # 槽标签 > 当前小时 ⇒ 来自昨天（跨午夜的 24h 窗）
+            if hour > cur_h:
+                yset.add(mid)
+            else:
+                tset.add(mid)
+    # 今日菜单优先用实时 up；历史今日槽作补充
+    today_set = today_set or tset
+    if not yset and not today_set:
+        return {"added": [], "removed": [], "yesterday": [], "text": "昨天和今天都还没点过餐", "thin": True}
+    if not yset:
+        return {"added": sorted(today_set), "removed": [], "yesterday": [],
+                "text": "昨天窗口样本不足，暂只看见今天的菜单", "thin": True}
+    added = sorted(today_set - yset)
+    removed = sorted(yset - today_set)
+    if not added and not removed:
+        text = "和昨天菜单一模一样（真稳）"
+    else:
+        parts = []
+        if added:
+            parts.append("多了 " + "、".join(added))
+        if removed:
+            parts.append("少了 " + "、".join(removed))
+        text = "比昨天 " + " · ".join(parts)
+    return {"added": added, "removed": removed, "yesterday": sorted(yset),
+            "text": text, "thin": False}
+
+
+def vs_yesterday_from_log(today_up):
+    """有 log.jsonl 时：精确对比「今日曾 up」与「昨日曾 up」。"""
+    now = datetime.now().astimezone()
+    today, yday = now.date(), now.date() - timedelta(days=1)
+    yset, tset = set(), set()
+    try:
+        for ln in (ROOT / "log.jsonl").read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(ln)
+                if "models" not in rec:
+                    continue
+                ts = datetime.fromisoformat(rec["ts"]).astimezone()
+            except Exception:  # noqa: BLE001
+                continue
+            ups = {m for m, r in rec["models"].items() if r.get("state") == "up"}
+            if not ups:
+                continue
+            if ts.date() == today:
+                tset |= ups
+            elif ts.date() == yday:
+                yset |= ups
+    except FileNotFoundError:
+        return None
+    today_set = set(today_up or []) | tset
+    if not yset and not today_set:
+        return {"added": [], "removed": [], "yesterday": [], "text": "昨天和今天都还没点过餐", "thin": True}
+    if not yset:
+        return {"added": sorted(today_set), "removed": [], "yesterday": [],
+                "text": "昨天没有投喂记录", "thin": True}
+    added = sorted(today_set - yset)
+    removed = sorted(yset - today_set)
+    if not added and not removed:
+        text = "和昨天菜单一模一样（真稳）"
+    else:
+        parts = []
+        if added:
+            parts.append("多了 " + "、".join(added))
+        if removed:
+            parts.append("少了 " + "、".join(removed))
+        text = "比昨天 " + " · ".join(parts)
+    return {"added": added, "removed": removed, "yesterday": sorted(yset),
+            "text": text, "thin": False}
+
+
+def enrich_flavor(data):
+    """给 payload / 离线快照补上 predict + vs_yesterday（及缺省 today 花活字段）。"""
+    if not data or "error" in data:
+        return data
+    history = data.get("history") or {}
+    today = dict(data.get("today") or {})
+    up = list(data.get("up") or [])
+    # 离线旧快照可能没有 streak / hungry：尽量不瞎填，只保证结构
+    today.setdefault("streak", 0)
+    today.setdefault("fed_today", bool(up) or bool(today.get("feeds")))
+    today.setdefault("hungry_hours", 0.0 if up else today.get("hungry_hours"))
+    today.setdefault("last_feed_at", today.get("last_feed_at") or "")
+    data["today"] = today
+    data["predict"] = predict_feed(history)
+    vs = vs_yesterday_from_log(up) if (ROOT / "log.jsonl").exists() else None
+    if vs is None:
+        # 用 ever（今日上过线）更接近「今日菜单」
+        ever = today.get("ever") or up
+        vs = vs_yesterday_from_history(history, ever)
+    data["vs_yesterday"] = vs
+    return data
+
+
 def sweep_state():
     try:
         s = json.loads((ROOT / "state.json").read_text(encoding="utf-8"))
@@ -712,6 +900,7 @@ def payload(force=False, deep=False, wait=None):
             "history": history_24h(),
             "port": PORT,
         }
+        data = enrich_flavor(data)
         _cache.update(ts=now, data=data)
     return data
 
