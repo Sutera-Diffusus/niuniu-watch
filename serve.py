@@ -310,6 +310,137 @@ def predict_feed(history, now=None):
     }
 
 
+WD_LABELS = list("一二三四五六日")
+
+
+def _models_up(models):
+    return any((r or {}).get("state") == "up" for r in (models or {}).values())
+
+
+def _heatmap_text(runs, feeds, days):
+    """→ (thin, text, hours_seen, feed_hours)。thin 的口径与 predict.thin 同精神：开饭样本 < 3。"""
+    hours_seen = feed_hours = 0
+    best = None  # (score, wd, hour, feeds, runs)
+    for wd in range(7):
+        for hour in range(24):
+            r, f = runs[wd][hour], feeds[wd][hour]
+            if r:
+                hours_seen += 1
+            feed_hours += f
+            if r > 0 and f > 0:
+                score = (f / r, f, -wd, -hour)
+                if best is None or score > best[0]:
+                    best = (score, wd, hour, f, r)
+    if hours_seen == 0:
+        return True, "还没有巡检记录，热力图先空着", hours_seen, feed_hours
+    if feed_hours < 3 or days < 3:
+        return True, f"样本偏少（只盖住 {days} 天、{feed_hours} 个开饭整点），格子先当参考", hours_seen, feed_hours
+    _score, wd, hour, f, r = best
+    return False, f"最常开饭 周{WD_LABELS[wd]} {hour:02d}:00（{f}/{r}）· 盖住 {days} 天", hours_seen, feed_hours
+
+
+def heatmap_from_buckets(buckets, now):
+    """buckets: {(date, hour): 该小时是否开过饭}。同一天同一整点只算一次。"""
+    runs = [[0] * 24 for _ in range(7)]
+    feeds = [[0] * 24 for _ in range(7)]
+    days = set()
+    for (date, hour), up in (buckets or {}).items():
+        if hour is None or not (0 <= int(hour) <= 23):
+            continue
+        hour = int(hour)
+        wd = date.weekday()
+        runs[wd][hour] += 1
+        if up:
+            feeds[wd][hour] += 1
+        days.add(date)
+    thin, text, hours_seen, feed_hours = _heatmap_text(runs, feeds, len(days))
+    anchor = None
+    if now is not None:
+        anchor = [now.weekday(), now.hour]
+    return {
+        "labels": WD_LABELS,
+        "runs": runs,
+        "feeds": feeds,
+        "days": len(days),
+        "hours_seen": hours_seen,
+        "feed_hours": feed_hours,
+        "thin": thin,
+        "text": text,
+        "anchor": anchor,
+    }
+
+
+def _collapse_feed_buckets(records):
+    """records: (datetime, models)。同一 date+hour 里只要有一次 up 就算开过饭。"""
+    buckets = {}
+    for ts, models in records:
+        if ts is None:
+            continue
+        if getattr(ts, "tzinfo", None) is None:
+            ts = ts.astimezone()
+        key = (ts.date(), ts.hour)
+        buckets[key] = bool(buckets.get(key)) or _models_up(models)
+    return buckets
+
+
+def _read_log_feed_records():
+    try:
+        lines = (ROOT / "log.jsonl").read_text(encoding="utf-8").splitlines()
+    except Exception:  # noqa: BLE001
+        return []
+    records = []
+    for ln in lines:
+        try:
+            rec = json.loads(ln)
+            if "models" not in rec:
+                continue
+            ts = datetime.fromisoformat(rec["ts"])
+        except Exception:  # noqa: BLE001
+            continue
+        records.append((ts, rec.get("models") or {}))
+    return records
+
+
+def feed_heatmap(now=None):
+    """从 log.jsonl 聚合「星期 × 整点」开饭热力（与 predict 同源）。"""
+    now = now or datetime.now().astimezone()
+    return heatmap_from_buckets(_collapse_feed_buckets(_read_log_feed_records()), now)
+
+
+def heatmap_from_history(history, now=None):
+    """没有 log 时，用 payload 里的 24h history 槽降级出一张瘦热力图，供 Pages 离线渲染。
+
+    优先用 history.end（巡检窗口终点，带时区），避免拿「现在」去套一份旧快照。
+    """
+    if now is None:
+        end = (history or {}).get("end")
+        if end:
+            try:
+                now = datetime.fromisoformat(end)
+            except Exception:  # noqa: BLE001
+                now = None
+    now = now or datetime.now().astimezone()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    slots = (history or {}).get("slots") or []
+    models = (history or {}).get("models") or {}
+    base = now.replace(minute=0, second=0, microsecond=0)
+    n = len(slots)
+    records = []
+    for i in range(n):
+        present = []
+        for arr in models.values():
+            if not arr or i >= len(arr) or arr[i] is None:
+                continue
+            present.append(arr[i])
+        if not present:
+            continue
+        ts = base - timedelta(hours=(n - 1 - i))
+        on = any(v == 1 for v in present)
+        records.append((ts, {"_": {"state": "up" if on else "down"}}))
+    return heatmap_from_buckets(_collapse_feed_buckets(records), now)
+
+
 def vs_yesterday_from_history(history, today_up, now=None):
     """用 24h 历史槽粗分「昨天/今天」菜单差（无完整 log 时的降级）。"""
     now = now or datetime.now().astimezone()
@@ -400,7 +531,11 @@ def vs_yesterday_from_log(today_up):
 
 
 def enrich_flavor(data):
-    """给 payload / 离线快照补上 predict + vs_yesterday（及缺省 today 花活字段）。"""
+    """给 payload / 离线快照补上 predict + vs_yesterday + heatmap（及缺省 today 花活字段）。
+
+    Pages 只有快照、没有 log.jsonl：有日志时把热力嵌进 payload；没有日志时用已有 history 槽降级，
+    让静态页离线也能画出格子。
+    """
     if not data or "error" in data:
         return data
     history = data.get("history") or {}
@@ -419,6 +554,14 @@ def enrich_flavor(data):
         ever = today.get("ever") or up
         vs = vs_yesterday_from_history(history, ever)
     data["vs_yesterday"] = vs
+    try:
+        if (ROOT / "log.jsonl").exists():
+            data["heatmap"] = feed_heatmap()
+        elif not data.get("heatmap"):
+            data["heatmap"] = heatmap_from_history(history)
+    except Exception:  # noqa: BLE001
+        if not data.get("heatmap"):
+            data["heatmap"] = heatmap_from_buckets({}, datetime.now().astimezone())
     return data
 
 
@@ -498,6 +641,7 @@ def history_24h():
         }
     return {
         "slots": [s.strftime("%H:00") for s in slots],
+        "end": base.isoformat(timespec="seconds"),
         "models": per,
         "runs": runs,
         "up_runs": up_runs,
