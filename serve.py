@@ -186,9 +186,13 @@ def err_kind(err: str) -> str:
 
 
 def today_digest():
-    today = datetime.now().astimezone().date()
+    """今日巡检摘要 + 花活字段（饥饿小时 / 连胜天数 / 上次投喂时间）。"""
+    now = datetime.now().astimezone()
+    today = now.date()
     runs = feeds = 0
     ever, last = set(), ""
+    last_feed_at = None  # 跨日：最近一次「有模型 up」的时间
+    feed_days = set()
     try:
         for ln in (ROOT / "log.jsonl").read_text(encoding="utf-8").splitlines():
             try:
@@ -198,17 +202,36 @@ def today_digest():
                 ts = datetime.fromisoformat(rec["ts"]).astimezone()
             except Exception:  # noqa: BLE001
                 continue
+            ups = [m for m, r in rec["models"].items() if r.get("state") == "up"]
+            if ups:
+                feed_days.add(ts.date())
+                if last_feed_at is None or ts > last_feed_at:
+                    last_feed_at = ts
             if ts.date() != today:
                 continue
             runs += 1
-            ups = [m for m, r in rec["models"].items() if r.get("state") == "up"]
             if ups:
                 feeds += 1
                 ever.update(ups)
                 last = ts.strftime("%H:%M")
     except FileNotFoundError:
         pass
-    return {"runs": runs, "feeds": feeds, "ever": sorted(ever), "last": last}
+    # 连胜：从今天（若今天还没投喂则从昨天）往回数连续「有投喂」的日历日
+    streak = 0
+    d = today if today in feed_days else today - timedelta(days=1)
+    while d in feed_days:
+        streak += 1
+        d -= timedelta(days=1)
+    hungry_hours = None
+    if last_feed_at is not None:
+        hungry_hours = round(max(0.0, (now - last_feed_at).total_seconds() / 3600), 1)
+    return {
+        "runs": runs, "feeds": feeds, "ever": sorted(ever), "last": last,
+        "last_feed_at": last_feed_at.isoformat(timespec="seconds") if last_feed_at else "",
+        "hungry_hours": hungry_hours,
+        "streak": streak,
+        "fed_today": today in feed_days,
+    }
 
 
 def sweep_state():
@@ -586,7 +609,8 @@ def _win_task_set(action, arg=""):
         if FROZEN:
             exe, arg = str(Path(sys.executable).resolve()), "--hourly"
         else:
-            exe, arg = _pyw(), f'"{ROOT / "watch.py"}"'
+            # 与 Linux / exe 一致：巡检 + 发布快照（仅 watch.py 会导致 Pages 静默停更）
+            exe, arg = _pyw(), f'"{ROOT / "serve.py"}" --hourly'
         script = (
             "$ErrorActionPreference='Stop';"
             f"$a=New-ScheduledTaskAction -Execute '{exe}' -Argument '{arg}'"
@@ -603,6 +627,51 @@ def _win_task_set(action, arg=""):
         return {"ok": False, "error": "unknown action"}
     return {"ok": r.returncode == 0, "code": r.returncode,
             "out": (r.stdout or "").strip()[-160:], "err": (r.stderr or "").strip()[-160:]}
+
+
+
+def apply_snapshot_sweep(data):
+    """快照发布：把仍为 checking 的 live 行用 state.json（sweep）补全。
+
+    --hourly 先跑 watch 再 publish；publish 进程内 probe_all 可能未跑完，
+    若不合并，Pages 会出现 up:0 / 大量 checking，而 sweep 里其实已有可用模型。
+    只填补 checking，不覆盖已完成的 live 探测结果。
+    """
+    if not data or "error" in data:
+        return data
+    sw = data.get("sweep") or {}
+    sw_models = sw.get("models") or {}
+    if not sw_models:
+        sw_models = sweep_state().get("models") or {}
+    if not sw_models:
+        return data
+    models = data.get("models") or []
+    changed = False
+    for m in models:
+        if m.get("state") != "checking":
+            continue
+        sst = sw_models.get(m["id"])
+        if sst not in ("up", "chat-only", "down"):
+            continue
+        m["state"] = sst
+        m["stale"] = False
+        if sst == "up":
+            m["err"] = ""
+            m["errKind"] = ""
+        elif sst == "chat-only":
+            m["err"] = m.get("err") or "responses failed"
+            m["errKind"] = m.get("errKind") or ""
+        changed = True
+    if not changed:
+        return data
+    up = [m["id"] for m in models if m.get("state") == "up"]
+    data["up"] = up
+    tot = (data.get("counts") or {}).get("total", len(models))
+    data["counts"] = {"up": len(up), "total": tot}
+    rank = {"up": 0, "chat-only": 1, "checking": 2, "down": 3}
+    models.sort(key=lambda x: (rank.get(x["state"], 4), 0 if x.get("configured") else 1, x["id"]))
+    data["models"] = models
+    return data
 
 
 def payload(force=False, deep=False, wait=None):
