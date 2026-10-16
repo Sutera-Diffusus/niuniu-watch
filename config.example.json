@@ -1,4 +1,5 @@
 {
  "api_key": "sk-在这里填入你的牛牛酱密钥",
- "notify": true
+ "notify": true,
+ "webhook_url": ""
 }

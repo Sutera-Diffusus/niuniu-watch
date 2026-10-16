@@ -5,6 +5,7 @@
 - 探测 free.quanthatch.com 上的全部模型：chat/completions 全量，通过者再验 responses 线。
 - 写 log.jsonl（每次运行追加）、state.json（供 omp hook 读取）、status.md（人读）、
   changes.log（变化流水）；状态有变化时弹一条桌面通知（Windows 气泡 / Linux notify-send）。
+  若配置了 webhook_url，仅在「没投喂 → 开饭」这一沿上 POST 一次。
 - 只用标准库，异常绝不外抛（定时任务里静默运行）。
 """
 import json
@@ -179,9 +180,58 @@ def load_cfg():
         return {}
 
 
+def feed_opened(old, up_ids):
+    """开饭沿：上一轮有基线且没有任何 up，这一轮至少有一个 up。首次建基线不算。"""
+    if not old:
+        return False
+    if any(v == "up" for v in old.values()):
+        return False
+    return bool(up_ids)
+
+
+def webhook_body(up_ids, now):
+    """开饭通知正文。menu 为当前可用模型；text 是短中文。"""
+    menu = [str(m) for m in (up_ids or [])]
+    text = "开饭啦" + (("：" + "、".join(menu)) if menu else "")
+    return {
+        "status": "up",
+        "menu": menu,
+        "ts": now.isoformat(timespec="seconds"),
+        "text": text,
+    }
+
+
+def post_webhook(url, payload):
+    """POST JSON 到 webhook_url。失败只在 stderr 记一行，绝不抛出（不打断巡检 / 面板）。"""
+    url = str(url or "").strip()
+    if not url:
+        return
+    if not (url.startswith("http://") or url.startswith("https://")):
+        try:
+            print("webhook 跳过: 地址需以 http:// 或 https:// 开头", file=sys.stderr)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    try:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": UA},
+        )
+        with urllib.request.urlopen(req, timeout=8, context=CTX) as r:
+            r.read(512)
+    except Exception as e:  # noqa: BLE001
+        try:
+            print(f"webhook 失败: {type(e).__name__}: {e}"[:180], file=sys.stderr)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def main():
     global NOTIFY
-    NOTIFY = bool(load_cfg().get("notify", NOTIFY))
+    cfg = load_cfg()
+    NOTIFY = bool(cfg.get("notify", NOTIFY))
+    webhook_url = str(cfg.get("webhook_url") or "").strip()
     now = datetime.now().astimezone()
     prev = load_json(STATE) or {}
 
@@ -295,6 +345,8 @@ def main():
     ]
     STATUS.write_text("\n".join(md) + "\n", encoding="utf-8")
 
+    if feed_opened(old, up):
+        post_webhook(webhook_url, webhook_body(up, now))
     if changed or first:
         toast(toast_title, toast_text)
     return 0
