@@ -186,9 +186,13 @@ def err_kind(err: str) -> str:
 
 
 def today_digest():
-    today = datetime.now().astimezone().date()
+    """今日巡检摘要 + 花活字段（饥饿小时 / 连胜天数 / 上次投喂时间）。"""
+    now = datetime.now().astimezone()
+    today = now.date()
     runs = feeds = 0
     ever, last = set(), ""
+    last_feed_at = None  # 跨日：最近一次「有模型 up」的时间
+    feed_days = set()
     try:
         for ln in (ROOT / "log.jsonl").read_text(encoding="utf-8").splitlines():
             try:
@@ -198,17 +202,36 @@ def today_digest():
                 ts = datetime.fromisoformat(rec["ts"]).astimezone()
             except Exception:  # noqa: BLE001
                 continue
+            ups = [m for m, r in rec["models"].items() if r.get("state") == "up"]
+            if ups:
+                feed_days.add(ts.date())
+                if last_feed_at is None or ts > last_feed_at:
+                    last_feed_at = ts
             if ts.date() != today:
                 continue
             runs += 1
-            ups = [m for m, r in rec["models"].items() if r.get("state") == "up"]
             if ups:
                 feeds += 1
                 ever.update(ups)
                 last = ts.strftime("%H:%M")
     except FileNotFoundError:
         pass
-    return {"runs": runs, "feeds": feeds, "ever": sorted(ever), "last": last}
+    # 连胜：从今天（若今天还没投喂则从昨天）往回数连续「有投喂」的日历日
+    streak = 0
+    d = today if today in feed_days else today - timedelta(days=1)
+    while d in feed_days:
+        streak += 1
+        d -= timedelta(days=1)
+    hungry_hours = None
+    if last_feed_at is not None:
+        hungry_hours = round(max(0.0, (now - last_feed_at).total_seconds() / 3600), 1)
+    return {
+        "runs": runs, "feeds": feeds, "ever": sorted(ever), "last": last,
+        "last_feed_at": last_feed_at.isoformat(timespec="seconds") if last_feed_at else "",
+        "hungry_hours": hungry_hours,
+        "streak": streak,
+        "fed_today": today in feed_days,
+    }
 
 
 def sweep_state():
