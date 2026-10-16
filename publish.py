@@ -22,6 +22,7 @@ def build():
     data = serve.payload(force=True, wait=25.0)
     if "error" in data:
         return data
+    data = serve.apply_snapshot_sweep(data)
     html = serve.asset("dashboard.html").read_text(encoding="utf-8")
     snap = "<script>window.__SNAPSHOT__ = " + json.dumps(data, ensure_ascii=False) + ";</script>"
     if "<body>" not in html:
