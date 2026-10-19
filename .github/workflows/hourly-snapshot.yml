@@ -1,0 +1,307 @@
+# Hourly sweep + Pages snapshot.
+#
+# Cron is UTC (minute 5, off the top of the hour). GitHub may start
+# scheduled runs late on free/shared runners. The job clock is
+# Asia/Shanghai so "today", heatmap hours, and commit timestamps stay
+# on the same +08 clock as the existing snapshots.
+#
+# A GITHUB_TOKEN push does not trigger the built-in branch Pages
+# workflow (pages-build-deployment). This file pushes docs/ and also
+# deploys that directory with actions/deploy-pages. After merge, set
+# Settings → Pages → Source to "GitHub Actions" once.
+name: Hourly snapshot
+
+on:
+  schedule:
+    - cron: '5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: niuniu-hourly-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: write
+    env:
+      NIUNIU_API_KEY: ${{ secrets.NIUNIU_API_KEY }}
+      NIUNIU_WEBHOOK_URL: ${{ secrets.NIUNIU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      - name: Configure git and clock
+        run: |
+          set -euo pipefail
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          if [ "$branch" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::expected branch ${DEFAULT_BRANCH}, got ${branch}"
+            exit 1
+          fi
+          git branch --set-upstream-to="origin/${DEFAULT_BRANCH}" "${DEFAULT_BRANCH}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          python3 - <<'PY'
+          from datetime import datetime
+          now = datetime.now().astimezone()
+          off = now.utcoffset()
+          if off is None or int(off.total_seconds()) != 8 * 3600:
+              raise SystemExit(f"expected Asia/Shanghai UTC+8, got {now.isoformat()}")
+          print(now.isoformat(timespec="seconds"))
+          PY
+
+      - name: Restore runtime state
+        id: runtime-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            state.json
+            log.jsonl
+            changes.log
+          key: niuniu-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            niuniu-runtime-
+
+      - name: Note runtime baseline
+        run: |
+          set -euo pipefail
+          if [ -f state.json ]; then
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          try:
+              state = json.loads(Path("state.json").read_text(encoding="utf-8"))
+          except Exception as exc:
+              print(f"::warning::state.json unreadable ({type(exc).__name__}); sweep will keep going")
+          else:
+              summary = str(state.get("summary") or "").replace("\n", " ")
+              print("restored", state.get("updated", ""), summary[:160])
+          PY
+          else
+            echo "no cached state.json; this run only establishes a baseline and will not send the feed-open webhook"
+          fi
+          if [ "${{ steps.runtime-cache.outputs.cache-matched-key }}" = "" ]; then
+            echo "cache miss"
+          else
+            echo "cache matched ${{ steps.runtime-cache.outputs.cache-matched-key }}"
+          fi
+
+      - name: Write transient config.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          url = os.environ.get("NIUNIU_WEBHOOK_URL", "").strip()
+          cfg = {"notify": False}
+          if url:
+              if not (url.startswith("http://") or url.startswith("https://")):
+                  raise SystemExit("NIUNIU_WEBHOOK_URL must start with http:// or https://")
+              cfg["webhook_url"] = url
+          path = Path("config.json")
+          path.write_text(json.dumps(cfg, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+          path.chmod(0o600)
+          PY
+          git check-ignore -q config.json
+          if git ls-files --error-unmatch config.json >/dev/null 2>&1; then
+            echo "::error::config.json is tracked; refusing to run"
+            exit 1
+          fi
+
+      - name: Check API key
+        run: |
+          set -euo pipefail
+          if [ -z "${NIUNIU_API_KEY}" ]; then
+            echo "::error::Add repository secret NIUNIU_API_KEY (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+          key = os.environ.get("NIUNIU_API_KEY", "").strip()
+          if not key:
+              sys.exit("NIUNIU_API_KEY is empty")
+          req = urllib.request.Request(
+              "https://free.quanthatch.com/v1/models",
+              headers={"Authorization": f"Bearer {key}", "User-Agent": "niuniu-watch/1.0"},
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  if resp.status != 200:
+                      sys.exit(f"/v1/models returned {resp.status}")
+                  resp.read(64)
+          except urllib.error.HTTPError as exc:
+              if exc.code in (401, 403):
+                  sys.exit(
+                      f"NIUNIU_API_KEY was rejected by /v1/models ({exc.code}). Nothing was published."
+                  )
+              print(f"::warning::/v1/models returned {exc.code}; continuing with the hourly sweep")
+          except Exception as exc:
+              print(f"::warning::preflight could not reach /v1/models ({type(exc).__name__}); continuing")
+          PY
+
+      - name: Hourly sweep and publish
+        run: |
+          set -euo pipefail
+          python3 serve.py --hourly 2>&1 | tee "$RUNNER_TEMP/hourly.log"
+          if grep -E 'publish error:|publish skipped:' "$RUNNER_TEMP/hourly.log"; then
+            echo "::error::serve.py --hourly did not publish a snapshot"
+            exit 1
+          fi
+          grep -E '^(snapshot:|git:)' "$RUNNER_TEMP/hourly.log" || true
+
+      - name: Reject commits outside docs/
+        run: |
+          set -euo pipefail
+          if git ls-files --error-unmatch config.json >/dev/null 2>&1; then
+            echo "::error::config.json is tracked"
+            exit 1
+          fi
+          subject="$(git log -1 --pretty=%s)"
+          case "$subject" in
+            snapshot\ *)
+              bad="$(git diff-tree --no-commit-id --name-only -r HEAD | grep -v '^docs/' || true)"
+              if [ -n "$bad" ]; then
+                echo "::error::snapshot commit contains files outside docs/:"
+                printf '%s\n' "$bad"
+                exit 1
+              fi
+              ;;
+          esac
+
+      - name: Push snapshot commit
+        run: |
+          set -euo pipefail
+          git fetch origin "$DEFAULT_BRANCH"
+          if git merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}"; then
+            echo "origin/${DEFAULT_BRANCH} already contains $(git rev-parse --short HEAD)"
+            exit 0
+          fi
+          echo "retrying push of $(git rev-parse --short HEAD)"
+          git pull --rebase origin "$DEFAULT_BRANCH"
+          git push origin "HEAD:${DEFAULT_BRANCH}"
+          git fetch origin "$DEFAULT_BRANCH"
+          git merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs
+          include-hidden-files: "true"
+
+      # Keep enough history for the weekday×hour heatmap and the feed
+      # streak. 120 days of hourly lines stays small in the Actions cache.
+      # A cache miss (first run, or eviction) starts a new baseline:
+      # feed_opened() does not fire until the next real 没投喂→开饭 edge.
+      # Also runs after a failed sweep so a partial state.json is kept.
+      # continue-on-error: a cache/trim error must not hide a snapshot
+      # that already published. Deploy still requires the sweep to succeed.
+      - name: Trim runtime logs
+        if: always() && hashFiles('state.json') != ''
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timedelta
+          from pathlib import Path
+
+          KEEP_DAYS = 120
+          MAX_CHANGE_LINES = 4000
+          cutoff = datetime.now().astimezone() - timedelta(days=KEEP_DAYS)
+
+          def parse_ts(raw):
+              ts = datetime.fromisoformat(raw)
+              if ts.tzinfo is None:
+                  return ts.replace(tzinfo=cutoff.tzinfo)
+              return ts.astimezone()
+
+          log = Path("log.jsonl")
+          if log.exists():
+              kept = []
+              for ln in log.read_text(encoding="utf-8").splitlines():
+                  if not ln.strip():
+                      continue
+                  try:
+                      ts = parse_ts(json.loads(ln).get("ts", ""))
+                  except Exception:
+                      continue
+                  if ts >= cutoff:
+                      kept.append(ln)
+              text = ("\n".join(kept) + "\n") if kept else ""
+              log.write_text(text, encoding="utf-8")
+              print(f"log.jsonl kept {len(kept)} lines since {cutoff.date().isoformat()}")
+
+          changes = Path("changes.log")
+          if changes.exists():
+              kept = []
+              for ln in changes.read_text(encoding="utf-8").splitlines():
+                  if not ln.strip():
+                      continue
+                  try:
+                      ts = parse_ts(ln.split()[0])
+                  except Exception:
+                      continue
+                  if ts >= cutoff:
+                      kept.append(ln)
+              if len(kept) > MAX_CHANGE_LINES:
+                  kept = kept[-MAX_CHANGE_LINES:]
+              text = ("\n".join(kept) + "\n") if kept else ""
+              changes.write_text(text, encoding="utf-8")
+              print(f"changes.log kept {len(kept)} lines")
+          PY
+
+      - name: Save runtime state
+        if: always() && hashFiles('state.json') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            state.json
+            log.jsonl
+            changes.log
+          key: niuniu-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+
+  pages:
+    needs: snapshot
+    if: >-
+      needs.snapshot.result == 'success' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

@@ -3,11 +3,25 @@
 牛牛酱公益站（free.quanthatch.com）模型可用性监控面板。
 
 **在线版（打开即看）：<https://sutera-diffusus.github.io/niuniu-watch/>**
-静态快照页，由本地程序每小时自动发布；页面每分钟自动拉取新快照。
+静态快照页，可由 GitHub Actions 或本地程序每小时发布；页面每分钟自动拉取新快照。
 实时探测、一键实测、控制台等完整功能请使用本地版。
 
 本地版：Windows 用单文件 exe 双击即用；Kubuntu 源码运行，`install.sh` 一键装好桌面启动器与 systemd 定时器。
-两种方式都会自动起本地服务（`127.0.0.1:8791`）并打开浏览器。
+两种方式都会自动起本地服务（`127.0.0.1:8791`）并打开浏览器。本地定时器仍然可选。
+
+## GitHub Actions
+
+[`.github/workflows/hourly-snapshot.yml`](.github/workflows/hourly-snapshot.yml) 在 GitHub 上跑 `python3 serve.py --hourly`：巡检，把 `docs/` 推回默认分支，再用 Actions 把这个目录发布到 Pages。Windows 计划任务和 Kubuntu 的 `niuniu-watch.timer` 不用改；两处不要同时推 `docs/`。
+
+合并后：
+
+1. **Settings → Secrets and variables → Actions** 添加 `NIUNIU_API_KEY`（必填，与本地 `config.json` 的 `api_key` 相同，不会写入仓库）。可选 `NIUNIU_WEBHOOK_URL`：只写在 runner 的临时 `config.json` 里（已在 `.gitignore`），用来发「没投喂 → 开饭」。
+2. **Settings → Pages → Build and deployment**，Source 选 **GitHub Actions**（一次即可）。用 `GITHUB_TOKEN` 推上去的提交不会触发原来的「从分支 / docs 部署」。
+3. 打开 Actions，手动运行一次 **Hourly snapshot**（`workflow_dispatch`，选默认分支）。
+
+定时规则是每小时第 5 分钟。**cron 是 UTC**；免费 / 共享 runner 上经常会晚几分钟甚至更久。任务里 `TZ=Asia/Shanghai`，页面上的钟点仍是 +08。
+
+`state.json`、`log.jsonl`、`changes.log` 放在 Actions cache 里跨次保留，不进 git。日志只留最近 **120 天**（够热力图和连胜，也避免缓存一直变大）。缓存被清掉或第一次跑时，这一轮只建基线，**不会**发开饭 webhook；热力图从新的巡检重新积。
 
 ## 功能
 
@@ -15,7 +29,7 @@
 - 行情头带：巨型可用计数 / 24h 供餐带 / 投喂率 / 巡检统计
 - 推荐榜（24h 可用率 → 延迟）、变化记录、系统通知、深浅双主题
 - 点模型行打开抽屉：实时探测（含工具调用验证）、延迟趋势、巡检历史、复制 selector
-- 「一键实测」走真实 omp 会话；每小时自动巡检（Windows 计划任务 / Kubuntu systemd 用户定时器）
+- 「一键实测」走真实 omp 会话；每小时自动巡检（GitHub Actions / Windows 计划任务 / Kubuntu systemd 用户定时器）
 - 开饭热力图：按星期 × 整点看历史上什么时候在投喂（样本少会标明，静态快照里也带得走）
 - 可选 Webhook：刚从「没投喂」变成「开饭」时 POST 一次（见下文）；桌面通知仍由 `notify` 控制
 
@@ -97,6 +111,7 @@ Kubuntu 不需要打包，`install.sh` 直接以源码运行。
 | 文件 | 作用 |
 |---|---|
 | `serve.py` | 面板服务与 API（quick/detail/try/sweep/task…）；`--hourly`＝巡检 + 发布快照 |
+| `.github/workflows/hourly-snapshot.yml` | GitHub 上的每小时巡检 + Pages 发布 |
 | `watch.py` | 探测核心；单次巡检（由定时任务调用），开饭沿上可发 webhook |
 | `publish.py` | 生成 `docs/` 静态快照并推送到 GitHub Pages |
 | `dashboard.html` | 全部界面；exe 优先读取同目录此文件，改样式无需重打包 |
